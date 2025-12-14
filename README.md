@@ -2,9 +2,9 @@
 
 ## 项目背景
 
-在尝试使用 Alibaba 的 Canal 进行 MySQL 到 Elasticsearch 的数据同步时，我遇到了诸多问题，特别是在处理多表连接场景时，Canal 存在各种限制(如子查询限制, 无法反向关联等)和不可预期的问题，而且负载占用也很大，导致其在实际生产环境中难以满足需求。
+在尝试使用 Alibaba 的 Canal 进行 MySQL 到 Elasticsearch 的数据同步时，我遇到了诸多问题，特别是在处理多表连接场景时，Canal 存在各种限制(如子查询限制, 无法反向关联等)和不可预期的问题，而且负载也很高，导致其在实际生产环境中难以满足需求。
 
-基于这些痛点，我决定使用 Go 语言重新实现一个更可靠、更高效、可自由灵活同步任意SQL查询的同步工具，这就是 `binlog-es-go` 的由来。
+基于这些痛点，我决定使用 Go 语言重新实现一个更可靠、更高效、可自由灵活同步任意SQL查询的同步工具，专注于将 MySQL 数据同步到 ES这一场景。
 
 ## 项目简介
 
@@ -24,7 +24,7 @@
 - **分表路由（mapping.sharding）**：按主键取模路由到物理分表，并对 SQL 中的 `{{var}}` 模板变量做渲染
 
 新增（Elasticsearch 兼容性）
-- **ES 7/8/9 兼容**：写入侧基于标准 HTTP REST API（`/_bulk`、`/_cluster/health`、`HEAD /{index}`），同一份二进制可对接 ES 7/8/9
+- **ES 7/8/9 兼容**：写入侧基于标准 HTTP REST API（`/_bulk`、`/_cluster/health`、`HEAD /{index}`）
 - **HTTPS/TLS 支持**：当 `es.addresses` 使用 `https://` 时，可通过 `es.tls` 配置自签 CA / mTLS / 跳过校验（仅开发环境）
 
 ---
@@ -36,7 +36,7 @@
 
 ### 实时同步（Realtime）
 ```bash
-# 构建二进制（首次或代码变更后执行一次）
+# 构建二进制
 go build -o bin/binlog-es-go ./cmd/binlog-es-go
 
 # 指定配置与任务名，启动实时链路
@@ -115,14 +115,14 @@ MySQL 8.4 注意事项
 
 #### 分表路由公约（sharding.strategy）
 
-为保证跨语言（Go/Java/PHP/Python/JS）实现一致，推荐统一遵守以下约定：
+为保证跨语言一致性，推荐统一遵守以下约定：
 
 - 分片 key 统一按十进制字符串处理（例如 `258652761531355136`），以 UTF-8 bytes 作为 hash 输入。
 - 默认策略：`crc32_ieee_uint32`（无符号 CRC32 IEEE），分片计算：`crc32_ieee_uint32(utf8(key_string)) % shards`。
 
 支持的 `sharding.strategy` 值：
 
-- `crc32_ieee_uint32`：默认策略，跨语言无歧义。
+- `crc32_ieee_uint32`：默认策略。
 - `mod`：`abs(key) % shards`。
 - `crc32_ieee_signed_abs`：兼容策略，`abs(int32(crc32_ieee_uint32(bytes))) % shards`。
 - `crc32`：兼容别名，等价于 `crc32_ieee_signed_abs`（仅用于兼容历史配置，不推荐新项目使用）。
