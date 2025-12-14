@@ -164,10 +164,16 @@ func (w *Writer) UpsertBulk(ctx context.Context, index string, idField string, d
 			return 0, fmt.Errorf("doc missing id field: %s", idField)
 		}
 		id := fmt.Sprintf("%v", idVal)
-		// 保留完整文档（包括 id 字段）到 _source
+		payload := make(map[string]interface{}, len(d))
+		for k, v := range d {
+			if k == idField {
+				continue
+			}
+			payload[k] = v
+		}
 		meta := fmt.Sprintf(`{"update":{"_index":%q,"_id":%q}}`, index, id)
 		src, err := json.Marshal(map[string]interface{}{
-			"doc":           d,
+			"doc":           payload,
 			"doc_as_upsert": true,
 		})
 		if err != nil {

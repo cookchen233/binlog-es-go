@@ -107,12 +107,11 @@ func shardForKey(key int64, sharding *cfgpkg.ShardingConfig) int {
 	}
 	strategy := strings.ToLower(strings.TrimSpace(sharding.Strategy))
 	if strategy == "" {
-		strategy = "mod"
+		strategy = "crc32_ieee_uint32"
 	}
 
 	switch strategy {
-	case "crc32":
-		// Match mysaas ShardRouter: crc32((string)key) % shards
+	case "crc32_ieee_uint32":
 		// Note: strconv.FormatInt always produces valid UTF-8.
 		s := strconv.FormatInt(key, 10)
 		if !utf8.ValidString(s) {
@@ -120,12 +119,23 @@ func shardForKey(key int64, sharding *cfgpkg.ShardingConfig) int {
 			strategy = "mod"
 			break
 		}
-		h := crc32.ChecksumIEEE([]byte(s))
-		sh := int(h % uint32(sharding.Shards))
-		if sh < 0 {
-			sh = -sh
+		u := crc32.ChecksumIEEE([]byte(s))
+		return int(int64(u) % int64(sharding.Shards))
+	case "crc32", "crc32_ieee_signed_abs":
+		// Compatibility mode: abs(int32(crc32_ieee(bytes))) % shards
+		// Note: strconv.FormatInt always produces valid UTF-8.
+		s := strconv.FormatInt(key, 10)
+		if !utf8.ValidString(s) {
+			// extremely defensive; should never happen
+			strategy = "mod"
+			break
 		}
-		return sh
+		u := crc32.ChecksumIEEE([]byte(s))
+		v := int64(int32(u))
+		if v < 0 {
+			v = -v
+		}
+		return int(v % int64(sharding.Shards))
 	default:
 		if key < 0 {
 			key = -key

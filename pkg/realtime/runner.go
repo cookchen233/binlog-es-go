@@ -2,6 +2,7 @@ package realtime
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -67,6 +68,17 @@ func (r *Runner) Run(ctx context.Context, task cfgpkg.SyncTask) error {
 			r.log.Error("realtime panic", zap.Any("recover", rec))
 		}
 	}()
+
+	index := task.Mapping.Index
+	exists, err := r.es.IndexExists(ctx, index)
+	if err != nil {
+		return fmt.Errorf("es index exists check failed: index=%s err=%w", index, err)
+	}
+	if !exists {
+		return fmt.Errorf("es index does not exist: %s (initialize index/mapping before starting binlog-es-go)", index)
+	}
+	r.log.Info("es index exists", zap.String("index", index))
+
 	user, pass, host, port, err := parseForReplication(r.cfg.DataSource.DSN)
 	if err != nil {
 		return err
@@ -159,7 +171,7 @@ func (r *Runner) Run(ctx context.Context, task cfgpkg.SyncTask) error {
 	}
 
 	schemaCache := newSchemaCache()
-	index := task.Mapping.Index
+	index = task.Mapping.Index
 	mainSQL := task.Mapping.SQL
 	parsedMainTable := getMainTableName(mainSQL)
 	effectiveMainTable := parsedMainTable

@@ -193,6 +193,16 @@ func NewRunner(log *zap.Logger, cfg cfgpkg.Config, task cfgpkg.SyncTask) (*Runne
 	} else {
 		log.Info("es refresh policy not set (using index refresh interval)", zap.Strings("addresses", cfg.ES.Addresses))
 	}
+	// Fail fast if index was not initialized (prod often deploys es-init separately)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	exists, err := esw.IndexExists(ctx, task.Mapping.Index)
+	if err != nil {
+		return nil, fmt.Errorf("es index exists check failed: index=%s err=%w", task.Mapping.Index, err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("es index does not exist: %s (initialize index/mapping before running bootstrap)", task.Mapping.Index)
+	}
 	return &Runner{log: log, cfg: cfg, task: task, mysql: mysql, es: esw}, nil
 }
 

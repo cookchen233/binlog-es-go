@@ -23,6 +23,10 @@
 - **表名归一（tableRewrite）**：将 binlog 事件中的物理表名（如 `enterprise_00`）重写为逻辑表名（如 `enterprise`），使任务配置保持稳定
 - **分表路由（mapping.sharding）**：按主键取模路由到物理分表，并对 SQL 中的 `{{var}}` 模板变量做渲染
 
+新增（Elasticsearch 兼容性）
+- **ES 7/8/9 兼容**：写入侧基于标准 HTTP REST API（`/_bulk`、`/_cluster/health`、`HEAD /{index}`），同一份二进制可对接 ES 7/8/9
+- **HTTPS/TLS 支持**：当 `es.addresses` 使用 `https://` 时，可通过 `es.tls` 配置自签 CA / mTLS / 跳过校验（仅开发环境）
+
 ---
 
 
@@ -75,137 +79,29 @@ MySQL 8.4 注意事项
 - `bootstrap.partitionSize`、`bootstrap.workers`、`bootstrap.bulkSize`、`bootstrap.bulkFlushMs`、`bootstrap.runBatchSize`
 - `syncTasks[].bulk.size`（如未显式指定，会用于 `RunWithIDs()` 的内层批尺寸优先级判断）
 
-### 版本冲突与自动重算
+### deleteOnMissing：语义与使用建议
 
-- **版本冲突检测**：ES 批量写入时，若遇到 `version_conflict_engine_exception`，会自动提取冲突的 ID 列表
-- **自动重算机制**：
-  - 检测到版本冲突后，立即对冲突 ID 重新执行主 SQL 查询
-  - 使用最新数据再次尝试写入 ES（仅重试一次）
-  - 适用于 Bootstrap 和 Realtime 两种模式
-- **失败处理**：
-  - 重算查询无返回行：记录 WARN 日志 `"冲突ID重算无返回行"` + ERROR 日志 `"记录死信"`
-  - 重算后 ES 写入仍失败：记录 ERROR 日志 `"冲突ID重算后仍写入失败"` + `"记录死信"`
-  - Realtime 模式：冲突重算失败后继续处理后续 binlog 事件，不中断同步
-  - Bootstrap 模式：冲突重算失败的 ID 会写入死信文件
+`mapping.deleteOnMissing` 的语义是：**当主 SQL 对传入的一批 keys 回查无结果时，将这些 _id 对应的 ES 文档删除**。
 
-### 死信与重放（Dead Letters & Replay）
-
-- **死信记录场景**：
-  - Bootstrap 模式：SQL 查询失败、ES 批量写入失败、版本冲突重算失败
-  - Realtime 模式：仅记录版本冲突重算失败（普通失败只记录 ERROR 日志，不写死信文件）
-- **死信位置**：`logs/dead-letters/<task>.log`，格式：
-    - `时间戳|[id1 id2 id3]|reason`
-- **监控指标**：通过 Prometheus 指标 `binlog_es_sync_dead_letters_total` 追踪累计死信数量
-- **一键重放死信**：
-  ```bash
-  ./bin/binlog-es-go --config=configs/config.yaml --mode=replay-deadletters --task=<task_name>
-  ```
-  行为说明：
-    - 解析 `logs/dead-letters/<task_name>.log` 中的 ID 去重后，调用 Bootstrap 的 `RunWithIDs()` 精确重算并 upsert 到 ES
-    - 成功后将原文件归档到 `logs/dead-letters/processed/<task_name>-<timestamp>.log`
-    - 可继续使用批量覆盖参数优化吞吐：`--bulk.size=<n> --bulk.flush-ms=<ms>`
-    - 端口配置：推荐在配置文件中设置 `server.replayDeadLettersPort`，或通过 `--server.port` 参数指定
-
-### 典型验证流程
-1. 启动 realtime：`./bin/binlog-es-go --config=configs/config.yaml --mode=realtime --task=<task_name>`
-2. 修改子表（如 category/itemspecifics/sheet_data）一行，观察日志：
-    - `relatedQuery ... resolved ids`（含 ids 数量或样例）
-    - `exec mapping sql ... keys.sample`（本批主键样例）
-    - `doc preview before upsert`（预览关键字段）
-3. 查询 ES：确认对应文档字段更新（如 `category_name`、`item_specifics`）。
-
----
-
-
-## 参数调优指引（实时性 vs 吞吐）
-
-- 强调实时（端到端 P95 < 500–800ms）
-    - 建议：`bulk.size=200~500`，`bulk.flushIntervalMs=100~300`，`bulk.concurrent=4~6`
-    - 观察：`binlog_lag`、`flush 批大小`直方图、`SQL/ES 延迟`直方图
-
-- 吞吐优先
-    - 建议：保留较大 `bulk.size`（如 1000），`flushIntervalMs=400~600`，`bulk.concurrent=4~6`
-
-- ES 刷新策略
-    - `es.refresh="wait_for"`：搜索可见性稳定但写入成本更高
-    - 使用索引 `refresh_interval` 时，搜索可见性通常延后 ~1s
-
-- MySQL 与主 SQL
-    - 降低时间窗后，关注 `realtime.queryTimeoutMs`、相关索引与查询计划
-    - relatedQuery 的分页 `pageSize` 不宜过大，避免拉长单次 flush
-
----
-
-
-## 架构与组件
-
-- __cmd/binlog-es-go__
-  - 入口程序与 CLI 命令解析。
-- __configs/__
-  - 配置文件目录。示例：`configs/config.yaml`
-- __pkg/realtime__
-  - 实时链路核心（`Runner.Run()`）。读取 binlog 事件，聚合主键，批量查询主 SQL 并 upsert 到 ES。
-- __pkg/bootstrap__
-  - 全量/局部重算链路。按 ID 区间/ID 列表批处理执行主 SQL 并 upsert 到 ES。
-- __pkg/db__
-  - MySQL 访问封装（`QueryMapping()` 等），兼容 IN 占位的多种写法，并输出 SQL 调试日志。
-- __pkg/es__
-  - Elasticsearch 写入封装（批量 upsert）。
-- __pkg/config__
-  - 配置类型定义与加载。
-- __pkg/metrics__
-  - Prometheus 指标汇报。
-
-核心流程（Realtime 增量）
-1. 读取配置，初始化 MySQL、ES、位置存储、指标与日志。
-2. 建立 go-mysql `CanalSyncer` 订阅 binlog，按 `mappingTable` 过滤相关表。
-3. 收集主键 keys（主表直接取主键；子表按 `relatedQuery` 反查主键）。
-4. 触发 flush（批量/时间窗/保护阈值），按 keys 执行主 SQL，得到文档，执行 transforms，批量写入 ES。
-5. 记录位点（事务结束/定时兜底），持续循环。
-
-核心流程（Bootstrap 全量/局部）
-1. 读取配置，解析主 SQL 与目标索引。
-2. 以区间或 ID 列表方式批量拉取 keys。
-3. 分批执行主 SQL → 文档转换 → 批量 upsert 到 ES。
-
----
+- 适用场景：主表物理删除、或主 SQL 本身带过滤条件（不满足条件时文档应从 ES 消失）。
+- 风险：如果业务写入存在“乱序/延迟落库”（例如导入时子表先写入、主表稍后写入），会在短时间窗口内出现“回查无结果”，从而误删 ES。
+- 建议：
+  - 仅当你确信“回查无结果 == 文档应消失”时才开启。
+  - 否则推荐保持 `deleteOnMissing=false`，并只启用 `deleteOnDelete=true`（主表 delete 事件删除 ES）。
 
 ## 配置详解（configs/config.yaml）
 
-以下为主要段落摘要说明（示例与注释已写入配置文件，可直接参考 `configs/config.yaml`）。
+配置项较多，建议直接参考：
 
-- __dataSource__
-  - `dsn`: MySQL 连接串，建议包含 `charset`、`parseTime`。
-  - `serverId`: binlog 订阅 serverId（集群唯一）。
-  - `gtidEnabled`: 是否启用 GTID（配合 `position.useGTID`）。
-  - `flavor`: `mysql` 或 `mariadb`。
+- `configs/config.yaml`（带注释的真实示例）
+- `configs/config.example.yaml`（最小化模板）
 
-- __es__
-  - `addresses`: ES 节点列表（http/https）。
-  - `username/password`: 认证。
-  - `version`: 版本差异适配（7/8）。
-  - `refresh`: 写入刷新策略：`""`, `"false"`, `"wait_for"`, `"true"`。
+最常用的字段：
 
-- __position__
-  - `path`: 位点保存路径。
-  - `useGTID`: 是否使用 GTID 存储位点。
-
-- __realtime__
-  - `heartbeatMs`: go-mysql 心跳周期（默认 1000）。
-  - `readTimeoutMs`: go-mysql 读超时（默认 2000）。
-  - `maxPending`: 待处理 keys 的保护阈值，达到后立即 flush（默认 10000）。
-  - `queryTimeoutMs`: 主 SQL 查询超时（默认 30000）。
-  - `esBulkTimeoutMs`: ES 批量写超时（默认 60000）。
-  - `esCircuitMaxBackoffMs`: ES 熔断指数退避上限（默认 30000）。
-  - `relatedQueryMaxPages`: relatedQuery 游标分页的最大页数上限（默认 1000）。
-  - `positionSaveIntervalMs`: 兜底保存位点周期（默认 30000）。
-
-- __bootstrap__
-  - `partitionSize`: 按 ID 区间切分的区块大小。
-  - `workers`: 并行 worker 数。
-  - `bulkSize`: ES upsert 批尺寸。
-  - `bulkFlushMs`: ES 批 flush 间隔。
-  - `runBatchSize`: `RunWithIDs()` 内层查询/写入批尺寸（实际优先级：`task.Bulk.Size` > `bootstrap.bulkSize` > `bootstrap.runBatchSize` > 1000）。
+- `dataSource.dsn`
+- `es.addresses`
+- `syncTasks[].mapping`（`_index/_id/sql/deleteOnDelete/deleteOnMissing/mainTable/sharding`）
+- `syncTasks[].mappingTable` / `syncTasks[].relatedQuery`
 
 ### 分表支持（tableRewrite / mainTable / sharding）
 
@@ -213,8 +109,40 @@ MySQL 8.4 注意事项
 
 - **binlog 路由**：事件里携带的是物理表名（如 `enterprise_07`），建议用 `syncTasks[].tableRewrite` 归一到逻辑表名（如 `enterprise`），再匹配 `mappingTable/relatedQuery`。
 - **主 SQL 回查**：若主 SQL 需要按分表执行，可配置 `mapping.sharding` 并在 SQL 使用模板变量：
-  - `FROM {{enterprise_table}}` 会被渲染为 `enterprise_00/enterprise_01/...`
+-  - `FROM {{enterprise_table}}` 会被渲染为 `enterprise_00/enterprise_01/...`
+-  - 子查询/关联表同样需要使用模板变量（否则会去查逻辑表名导致 `Table ... doesn't exist`），例如：`FROM {{enterprise_event_table}}`
 - **无法从 SQL 解析主表时**（例如 FROM 用了模板变量），需要显式配置 `mapping.mainTable` 作为逻辑主表名。
+
+#### 分表路由公约（sharding.strategy）
+
+为保证跨语言（Go/Java/PHP/Python/JS）实现一致，推荐统一遵守以下约定：
+
+- 分片 key 统一按十进制字符串处理（例如 `258652761531355136`），以 UTF-8 bytes 作为 hash 输入。
+- 默认策略：`crc32_ieee_uint32`（无符号 CRC32 IEEE），分片计算：`crc32_ieee_uint32(utf8(key_string)) % shards`。
+
+支持的 `sharding.strategy` 值：
+
+- `crc32_ieee_uint32`：默认策略，跨语言无歧义。
+- `mod`：`abs(key) % shards`。
+- `crc32_ieee_signed_abs`：兼容策略，`abs(int32(crc32_ieee_uint32(bytes))) % shards`。
+- `crc32`：兼容别名，等价于 `crc32_ieee_signed_abs`（仅用于兼容历史配置，不推荐新项目使用）。
+
+测试向量（`shards=64`）：
+
+- `key="0"` -> shard `33`
+- `key="1"` -> shard `55`
+- `key="42"` -> shard `08`
+- `key="258652761531355136"` -> shard `00`
+- `key="258652848596717568"` -> shard `63`
+
+补充说明（重要）：mappingTable 与 relatedQuery 的职责
+
+- `mappingTable` 的作用是：当某张表发生 binlog 事件时，**从该事件行里直接提取“主文档 _id”**（也就是主表的主键）用于触发重算/回写。
+- 因此在“主表/子表”模型中：
+  - 主表（如 `enterprise`）通常可配置 `mappingTable.enterprise: ["id"]`
+  - 子表（如 `enterprise_event`、`enterprise_contact` 等）如果自身也有 `id` 主键，**不要**配置成 `mappingTable.<child>: ["id"]`，否则程序会把“子表 id”误当作“主表 id”，导致主 SQL 回查无结果。
+- 子表变更应使用 `relatedQuery`：通过子表行中的外键（如 `enterprise_id`）回溯得到主表主键集合，再触发主 SQL 重算。
+- 若同时开启 `mapping.deleteOnMissing: true`，上述误配会进一步导致误删 ES 文档（因为回查无结果会被当成“应删除”）。
 
 ### 命令行参数列表
 ```
@@ -258,84 +186,6 @@ MySQL 8.4 注意事项
   - `bulk`: 实时链路 flush 策略（批量/时间窗/并发）。
   - `retry`: SQL/ES 写的重试策略（最大次数+退避数组）。
 
-### relatedQuery 反查配置
-- 目的：子表变更时，根据变更行字段反查出受影响的主键（keys），以便重算并 upsert 主文档。
-- 两类配置方式：
-  1. SQL 直写（推荐）：
-     - 游标分页：SQL 里写过滤与游标条件（`... AND AutoID > :cursor`），不写 ORDER BY 和 LIMIT；在配置中声明 `orderKey` 与 `pageSize`，程序运行时自动追加 `ORDER BY <orderKey> ASC LIMIT :page_size` 并循环翻页，直到没有更多数据。
-     - 单次映射：如一对一关系（`sheet_data`），直接写完整 SQL 即可，不需要配置 `orderKey` 和 `pageSize`。
-  2. 声明式游标分页（已支持，当前未使用）：通过 `mode: cursor` + `targetTable/filter/orderKey/pageSize` 声明，无需写 SQL。
-- 游标分页实现细节：
-  - 程序自动维护游标（初始值为 0），每次查询后更新为本页最后一个 ID
-  - 自动循环查询直到返回数据为空或少于 pageSize
-  - 最大分页数由 `realtime.relatedQueryMaxPages` 控制（默认 1000 页）
-  - 建议为游标字段建立复合索引（如 `<main_table>(Category_id, AutoID)`），保证稳定排序与高效扫描
-
----
-
-## 示例数据模型速查（与 configs/config.yaml 对应）
-
-> 说明：以下为示例配置的表结构关系，便于理解 SQL 写法与 relatedQuery 的来源。开源接入时，请替换为你的 `<main_table>` 与业务表。
-
-- 主表：`sheet1`（示例中的 `<main_table>`）
-  - 主键：`AutoID`（作为 ES 文档 `_id`）
-  - 关联：`sheet1.Category_id -> category.id`
-  - 重要字段：`Title/SKU/Price/StartTime/EndTime/...` 等业务属性
-  - 索引建议：`(Category_id, AutoID)`（用于类目回溯的游标分页）
-
-- 子表（1:1）：`sheet_data`
-  - 关联：`sheet_data.sheet_id = sheet1.AutoID`
-  - 字段示例：`description`（在主 SQL 中 `IFNULL(d.description,'') AS description`）
-  - relatedQuery（二合一）：
-    - 直连分支：binlog 携带 `sheet_id` → 直接回溯 `AutoID`
-    - 回退分支：`JOIN sheet_data -> sheet1` 反查 `AutoID`（MINIMAL 下 DELETE 可能拿不到）
-
-- 子表（1:N）：`itemspecifics`
-  - 关联：`itemspecifics.SheetID = sheet1.AutoID`
-  - 字段示例：`Name/Value`（主 SQL 用 `GROUP_CONCAT` 聚合为 `item_specifics`）
-  - relatedQuery（二合一）：
-    - 直连分支：binlog 携带 `SheetID` → 直接回溯 `AutoID`
-    - 回退分支：以 `id` 通过 `JOIN itemspecifics -> sheet1` 反查 `AutoID`
-
-- 维度表（N:1）：`category`
-  - 关联：`sheet1.Category_id = category.id`
-  - 字段示例：`remark`（主 SQL 映射为 `category_name`）
-  - relatedQuery（分页回溯）：按 `Category_id` 过滤并以 `AutoID` 游标分页，程序自动补齐 `ORDER BY <orderKey> ASC LIMIT :page_size`
-
-注意事项与建议：
-- MINIMAL 下的 DELETE 事件可能不携带直连外键（如 `SheetID/sheet_id`），导致回退 JOIN 获取不到；如需保证删除也触发重算，建议 `binlog_row_image=FULL`。
-- 一对多聚合字段（如 `item_specifics`）建议在 SQL 中使用 `GROUP BY <_id>` 保证稳定聚合。
-- 仅作为示例模型，真正接入时请在 `configs/config.yaml` 中替换表名/字段名与索引，并保持 `mappingTable` 与 `relatedQuery` 一致。
-
----
-
-## 指标与日志
-
-Prometheus 指标（部分）：
-- SQL 延迟直方图：`binlog_es_sync_sql_latency_seconds`
-- ES 批量写延迟直方图：`binlog_es_sync_es_bulk_latency_seconds`
-- 重试次数：`binlog_es_sync_retry_total{component="sql|es"}`
-- 连接重建次数：`binlog_es_sync_reconnect_total`
-- 实时 flush 批大小：`binlog_es_sync_realtime_flush_batch_size`
-- binlog 滞后：`binlog_es_sync_realtime_binlog_lag_seconds`
-- 删除成功计数（带原因标签）：`binlog_es_sync_delete_success_total{reason="deleteOnMissing|deleteOnDelete"}`
-
-日志重点：
-- `relatedQuery ... resolved ids` / `relatedQuery paged resolved ids`
-- `exec mapping sql`（含 keys.sample）
-- `doc preview before upsert`
-- `es circuit open`（熔断与退避）
-
----
-
-## SQL 编写与索引建议
-
-- 推荐使用 `IN (?)` 作为主 SQL 的占位写法，简洁直观。
-- 游标分页：SQL 写过滤与 `AND <orderKey> > :cursor`，不要写 limit；在配置声明 `orderKey` 与 `pageSize`，程序自动补齐 `ORDER BY <orderKey> ASC LIMIT :page_size`。
-- 索引：
-  - 类目回溯：`<main_table>(Category_id, AutoID)`
-  - 其他需要分页回溯的场景：`(<FilterColumn>, <OrderKey>)`
-- 仅在一对一映射（如 `itemspecifics`/`sheet_data`）使用 `LIMIT 1` 的单次查询。
 
 ---
 

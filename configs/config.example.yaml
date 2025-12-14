@@ -113,8 +113,14 @@ syncTasks:
       # - shards: 分片数量
       # - suffixWidth: 后缀宽度（enterprise_00 的 2 即 00~63）
       # - vars: SQL 模板变量名 -> 逻辑表前缀
+      # - strategy: 分片策略（默认 crc32_ieee_uint32）
+      #   - crc32_ieee_uint32: crc32_ieee(utf8(string(key))) 作为 uint32，再 % shards（推荐，跨语言无歧义）
+      #   - mod: abs(key) % shards
+      #   - crc32_ieee_signed_abs: abs(int32(crc32_ieee(bytes))) % shards（兼容模式）
+      #   - crc32: 兼容别名（等价于 crc32_ieee_signed_abs）
       # 使用方式：在 SQL 中写 FROM {{enterprise_table}}，运行时会渲染为 enterprise_00/enterprise_01...
       # sharding:
+      #   strategy: "crc32_ieee_uint32"
       #   shards: 64
       #   suffixWidth: 2
       #   vars:

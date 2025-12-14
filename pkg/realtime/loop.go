@@ -205,26 +205,24 @@ func (r *Runner) runEventLoop(
 				r.log.Warn("schema cache get failed", zap.Error(err))
 				break
 			}
-			// 主键列名
+			// 主键列名（仅主表直连路径需要；子表可通过 relatedQuery 回溯，不强制）
 			keyName := ""
 			if arr, ok := task.MappingTable[routingTable]; ok && len(arr) > 0 {
 				keyName = arr[0]
 			}
-			if keyName == "" {
-				r.log.Warn("no key defined for table", zap.String("table", routingTable))
-				break
-			}
-			// 找列索引
 			keyIdx := -1
-			for i, n := range cols {
-				if strings.EqualFold(n, keyName) {
-					keyIdx = i
+			if keyName != "" {
+				// 找列索引
+				for i, n := range cols {
+					if strings.EqualFold(n, keyName) {
+						keyIdx = i
+						break
+					}
+				}
+				if keyIdx < 0 {
+					r.log.Warn("key column not found", zap.String("table", routingTable))
 					break
 				}
-			}
-			if keyIdx < 0 {
-				r.log.Warn("key column not found", zap.String("table", routingTable))
-				break
 			}
 			// 拿行
 			var rows [][]interface{}
@@ -295,6 +293,10 @@ func (r *Runner) runEventLoop(
 				effectiveMainTable = strings.ToLower(strings.TrimSpace(task.Mapping.MainTable))
 			}
 			if strings.EqualFold(routingTable, effectiveMainTable) {
+				if keyName == "" {
+					r.log.Warn("no key defined for table", zap.String("table", routingTable))
+					break
+				}
 				for _, rrow := range rows {
 					if keyIdx >= len(rrow) {
 						continue

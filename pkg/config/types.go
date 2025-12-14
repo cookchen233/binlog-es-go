@@ -132,8 +132,10 @@ type Mapping struct {
 // Example: vars: { enterprise_table: enterprise, enterprise_event_table: enterprise_event }
 type ShardingConfig struct {
 	// Strategy decides how to compute shard for a key.
-	// - "mod" (default): abs(key) % shards
-	// - "crc32": crc32(string(key)) % shards (compatible with mysaas ShardRouter)
+	// - "crc32_ieee_uint32" (default): crc32_ieee(utf8(string(key))) as uint32, then % shards
+	// - "mod": abs(key) % shards
+	// - "crc32_ieee_signed_abs": abs(int32(crc32_ieee(bytes))) % shards (compatibility mode)
+	// - "crc32": alias of "crc32_ieee_signed_abs" (backward compatibility)
 	Strategy    string            `mapstructure:"strategy"`
 	Shards      int               `mapstructure:"shards"`
 	SuffixWidth int               `mapstructure:"suffixWidth"`
