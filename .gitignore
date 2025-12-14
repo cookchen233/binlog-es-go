@@ -1,0 +1,7 @@
+.idea
+.DS_Store
+/data
+/logs
+/bin
+./binlog-es-go
+/configs/config.yaml

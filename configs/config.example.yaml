@@ -1,0 +1,214 @@
+dataSource:
+  # MySQL 连接串(建议包含 charset, parseTime 等)
+  dsn: "root:123456@tcp(server.mysql:3306)/dbname?parseTime=true&charset=utf8mb4"
+  # binlog 订阅使用的 serverId（集群内需唯一）
+  serverId: 12345
+  # 是否启用 GTID，推荐 true（与 position.useGTID 配合）
+  gtidEnabled: true
+  # MySQL 风格: mysql 或 mariadb
+  flavor: "mysql"
+
+es:
+  # ES 节点地址（http(s)）
+  addresses:
+    - "http://server.elasticsearch:9200"
+  # 认证（如无可留空）
+  username: ""
+  password: ""
+  # 版本（用于适配差异，如 7/8）
+  version: 7
+  # 写入刷新策略: "", "false", "wait_for", "true" （留空表示按索引 refresh_interval）
+  # refresh: "wait_for"
+
+position:
+  # 位点存储路径（相对或绝对路径）
+  path: "data/position.json"
+  # 是否使用 GTID 存储位点（需与 dataSource.gtidEnabled 配合）
+  useGTID: true
+
+realtime:
+  # go-mysql 心跳周期(毫秒)
+  heartbeatMs: 1000
+  # go-mysql 读超时(毫秒)
+  readTimeoutMs: 2000
+  # pending 积压保护阈值，达到后立即强制 flush
+  maxPending: 10000
+  # 主SQL查询超时(毫秒)，默认 30000
+  queryTimeoutMs: 30000
+  # ES 批量写入超时(毫秒)，默认 60000
+  esBulkTimeoutMs: 60000
+  # ES 熔断指数退避上限(毫秒)，默认 30000
+  esCircuitMaxBackoffMs: 30000
+  # relatedQuery 分页最大页数(安全阈值)，默认 1000
+  relatedQueryMaxPages: 1000
+  # 兜底保存位点的周期(毫秒)，默认 30000
+  positionSaveIntervalMs: 30000
+
+bootstrap:
+  partitionSize: 5000
+  workers: 4
+  bulkSize: 1000
+  bulkFlushMs: 800
+  # RunWithIDs 内层查询/写入批尺寸(条)，若未设置则优先使用 task.bulk.size 或 bootstrap.bulkSize
+  runBatchSize: 1000
+
+logging:
+  # 日志级别: debug|info|warn|error
+  level: debug
+  # 日志文件路径（留空仅输出到控制台）
+  file: "logs/app.log"
+
+debug:
+  # 是否打印最终 SQL 形态（含展开后的 IN 列表占位）
+  sql: true
+  # 是否打印参数样例（建议仅测试时开启，避免过长）
+  sqlParams: true
+
+server:
+  # 内置 HTTP 端口（/healthz, /metrics）
+  # 通用端口（所有模式共用，如未单独配置）
+  port: 8222
+  # 各模式独立端口配置（可选，优先级高于通用端口）
+  # 配置后可避免多模式同时运行时的端口冲突
+  realtimePort: 8222          # realtime 模式端口（长期运行，建议启用）
+  bootstrapPort: 8223         # bootstrap 模式端口（短期任务，可选）
+  replayDeadLettersPort: 8224 # replay-deadletters 模式端口（临时任务，可选）
+  # 是否对短期任务（bootstrap/replay-deadletters/self-check）禁用 HTTP 服务器
+  disableForShortTasks: true
+
+syncTasks:
+  - destination: "main_table"   # 任务名
+    # 可选：表名归一/重写（用于分表场景，让 binlog 的物理表名映射到逻辑表名）
+    # 例如：enterprise_00~63 -> enterprise
+    # tableRewrite:
+    #   - pattern: "(?i)^enterprise_[0-9]{2}$"
+    #     replace: "enterprise"
+    mapping:
+      # ES 索引名/主键字段/是否 upsert
+      _index: "index_name"
+      _id: "_id"
+      upsert: true
+      # 当主表收到 binlog 的 DELETE_ROWS 事件时，是否直接对对应 _id 执行 ES 删除
+      deleteOnDelete: true
+      # 当主 SQL 按传入 keys 查询无结果时，是否对这些 _id 执行 ES 删除
+      deleteOnMissing: false
+
+      # 可选：显式指定“逻辑主表名”（用于 binlog 路由）。
+      # 当 mapping.sql 的 FROM 使用模板变量（例如 FROM {{main_table}}）时，程序无法从 SQL 解析出主表名，
+      # 此时必须提供 mainTable。
+      # mainTable: "main_table"
+
+      # 可选：分表配置（按 key % shards 分组执行 SQL，并渲染模板变量）。
+      # - shards: 分片数量
+      # - suffixWidth: 后缀宽度（enterprise_00 的 2 即 00~63）
+      # - vars: SQL 模板变量名 -> 逻辑表前缀
+      # 使用方式：在 SQL 中写 FROM {{enterprise_table}}，运行时会渲染为 enterprise_00/enterprise_01...
+      # sharding:
+      #   shards: 64
+      #   suffixWidth: 2
+      #   vars:
+      #     enterprise_table: "enterprise"
+      #     enterprise_event_table: "enterprise_event"
+
+      # 主 SQL（使用 IN (?) 占位写法）
+      sql: |
+        SELECT
+          s.AutoID as _id, s.AutoID, s.Country, s.Title, s.price, s.qty,
+          IFNULL(d.description, '') AS description,
+          IFNULL(c.remark, '') AS category_name,
+          IFNULL(
+            GROUP_CONCAT(
+              CONCAT_WS(' : ', COALESCE(i.Name,''), COALESCE(i.Value,''))
+              ORDER BY i.Name, i.Value
+              SEPARATOR ';'
+          ), '') AS attributes
+        FROM main_table s
+        LEFT JOIN desc_data d ON d.auto_id = s.AutoID
+        LEFT JOIN category c ON c.id = s.Category_id
+        LEFT JOIN attribute i ON i.AutoID = s.AutoID
+        WHERE s.AutoID IN (?)
+        GROUP BY s.AutoID
+    # 表与主键字段映射（用于 binlog 事件解析与相关查询参数映射）
+    mappingTable:
+      main_table: ["AutoID"]
+      desc_data: ["auto_id"]
+      category: ["id"]
+      attribute: ["id"]
+    # 相关变更回溯为主键集合（子表更新时如何找到主文档 _id）
+    relatedQuery:
+      # 当 category 变更时，按 AutoID 游标分页取出受影响的主键集合
+      # 说明：
+      # - :category_id 来自变更行（下方 bind 映射）
+      # - :cursor 为游标（程序维护，首次为 0，之后为上一页最后一个 AutoID）
+      # - pageSize 指定每页条数；程序会在运行时自动追加 ORDER BY <orderKey> ASC LIMIT :page_size
+      # - 强烈建议为 main_table 建索引 (Category_id, AutoID)
+      category:
+        sql: |
+          SELECT AutoID
+          FROM main_table
+          WHERE Category_id = :category_id
+            AND AutoID > :cursor
+          -- ORDER BY 与 LIMIT 由程序按 orderKey/pageSize 自动补齐
+        bind:
+          # 格式: 占位符: "binlog携带的key"
+          category_id: "id"
+        orderKey: AutoID
+        pageSize: 500
+      attribute:
+        # 二合一解析规则（COALESCE）
+        # - 优先项：使用 binlog 行中携带的 AutoID（推荐在 MySQL 配置 binlog_row_image=FULL）。
+        #   作用：直接将 AutoID 作为主键 AutoID 进入重算；DELETE/UPDATE/INSERT 场景均适用，最稳定。
+        #   日志示例：relatedQuery bind.sample {"id":424928988,"auto_id":494423}
+        # - 回退项：当事件未携带 AutoID（常见于 MINIMAL 行镜像），尝试通过子表 id 与主表 JOIN 定位 AutoID。
+        #   说明：DELETE 时子表行已删除，回退 JOIN 可能查不到目标，从而本次不触发重算；UPDATE/INSERT 一般可解析。
+        # 建议：生产环境设置 binlog_row_image=FULL，保证 DELETE 也能稳定携带 AutoID，从而必然触发重算。
+        sql: |
+          SELECT COALESCE(
+            :auto_id,
+            (
+              SELECT s.`AutoID`
+              FROM `main_table` s
+              JOIN `attribute` i ON i.`AutoID` = s.`AutoID`
+              WHERE i.`id` = :id
+              LIMIT 1
+            )
+          ) AS `AutoID`
+        bind:
+          auto_id: "AutoID"
+          id: "id"
+      desc_data:
+        # 二合一解析规则（COALESCE）
+        # - 优先项：使用 binlog 行中携带的 auto_id，直接作为主键 AutoID 重算；
+        # - 回退项：若事件未携带 auto_id（MINIMAL），以子表 auto_id 作为 id 与主表 JOIN 尝试解析 AutoID；
+        #   限制：DELETE 时子表行已删除，MINIMAL 下回退 JOIN 可能拿不到，导致本次不触发重算；FULL 可覆盖该场景。
+        # 建议：将 MySQL 配置为 binlog_row_image=FULL，以保证所有删除场景可稳定解析。
+        sql: |
+          SELECT COALESCE(
+            :auto_id,
+            (
+              SELECT s.`AutoID`
+              FROM `main_table` s
+              JOIN `desc_data` d ON d.`auto_id` = s.`AutoID`
+              WHERE d.`auto_id` = :id
+              LIMIT 1
+            )
+          ) AS `AutoID`
+        bind:
+          auto_id: "auto_id"
+          id: "auto_id"
+    # 文档入 ES 前的字段转换
+    transforms:
+      splitFields:
+        # 将 attributes 从分号分隔的组合字符串拆分为字符串数组
+        - field: "attributes"
+          sep: ";"
+          trim: true
+    # flush 策略：批量阈值/时间窗口/并发（实时链路）
+    bulk:
+      size: 200
+      flushIntervalMs: 100
+      concurrent: 4
+    # 重试策略（SQL/ES 写）
+    retry:
+      maxAttempts: 5
+      backoffMs: [200, 500, 1000, 2000, 5000]
