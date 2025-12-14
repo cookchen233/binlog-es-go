@@ -112,7 +112,13 @@ func runSelfCheck() int {
 
 	// Check ES connectivity
 	logger.Info("self-check: es connect", zap.Strings("addresses", cfg.ES.Addresses))
-	esw, err := espkg.New(cfg.ES.Addresses, cfg.ES.Username, cfg.ES.Password)
+	esw, err := espkg.NewWithTLS(cfg.ES.Addresses, cfg.ES.Username, cfg.ES.Password, espkg.TLSConfig{
+		InsecureSkipVerify: cfg.ES.TLS.InsecureSkipVerify,
+		CAFile:             cfg.ES.TLS.CAFile,
+		CertFile:           cfg.ES.TLS.CertFile,
+		KeyFile:            cfg.ES.TLS.KeyFile,
+		ServerName:         cfg.ES.TLS.ServerName,
+	})
 	if err != nil {
 		logger.Error("self-check: es client init failed", zap.Error(err))
 		return 1

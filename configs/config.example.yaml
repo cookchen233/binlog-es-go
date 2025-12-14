@@ -15,6 +15,17 @@ es:
   # 认证（如无可留空）
   username: ""
   password: ""
+  # TLS 配置（仅当 addresses 使用 https:// 时生效）
+  # tls:
+  #   # 开发环境自签证书可临时跳过校验（不推荐生产开启）
+  #   insecureSkipVerify: false
+  #   # 自定义 CA（PEM），用于信任自签/内网证书
+  #   caFile: "/path/to/ca.pem"
+  #   # 可选：双向 TLS（mTLS）客户端证书
+  #   certFile: "/path/to/client.crt"
+  #   keyFile: "/path/to/client.key"
+  #   # 可选：覆盖 TLS SNI/证书校验的 serverName
+  #   serverName: "server.elasticsearch"
   # 版本（用于适配差异，如 7/8）
   version: 7
   # 写入刷新策略: "", "false", "wait_for", "true" （留空表示按索引 refresh_interval）

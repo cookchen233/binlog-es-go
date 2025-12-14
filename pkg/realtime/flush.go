@@ -148,6 +148,9 @@ func (r *Runner) flushBatch(
 	docs := make([]map[string]interface{}, 0, len(rows))
 	for _, row := range rows {
 		doc := transform.NormalizeBytesToString(row)
+		if len(task.Transforms.JSONDecodeFields) > 0 {
+			transform.JSONDecodeFields(doc, task.Transforms.JSONDecodeFields)
+		}
 		if len(task.Transforms.SplitFields) > 0 {
 			for _, rule := range task.Transforms.SplitFields {
 				if rule.Field == "" {
@@ -193,6 +196,7 @@ func (r *Runner) flushBatch(
 					mapper.RetryConfig{MaxAttempts: task.Retry.MaxAttempts, BackoffMs: task.Retry.BackoffMs},
 					r.db.QueryMapping,
 					task.Transforms.SplitFields,
+					task.Transforms.JSONDecodeFields,
 					"realtime",
 				)
 			}

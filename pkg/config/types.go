@@ -26,6 +26,15 @@ type ES struct {
 	Password  string   `mapstructure:"password"`
 	Version   int      `mapstructure:"version"`
 	Refresh   string   `mapstructure:"refresh"` // "", "false", "wait_for", "true"
+	TLS       ESTLS    `mapstructure:"tls"`
+}
+
+type ESTLS struct {
+	InsecureSkipVerify bool   `mapstructure:"insecureSkipVerify"`
+	CAFile             string `mapstructure:"caFile"`
+	CertFile           string `mapstructure:"certFile"`
+	KeyFile            string `mapstructure:"keyFile"`
+	ServerName         string `mapstructure:"serverName"`
 }
 
 type Position struct {
@@ -145,7 +154,8 @@ type RelatedQueryRule struct {
 
 // Transforms defines optional doc transformations prior to ES upsert
 type Transforms struct {
-	SplitFields []SplitFieldRule `mapstructure:"splitFields"`
+	SplitFields      []SplitFieldRule `mapstructure:"splitFields"`
+	JSONDecodeFields []string         `mapstructure:"jsonDecodeFields"`
 }
 
 // SplitFieldRule splits a string field into an array by separator

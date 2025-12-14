@@ -1,7 +1,9 @@
 package transform
 
 import (
+	"encoding/json"
 	"sort"
+	"strings"
 )
 
 // NormalizeBytesToString returns a shallow-copied map where []byte values are converted to string.
@@ -19,6 +21,42 @@ func NormalizeBytesToString(in map[string]interface{}) map[string]interface{} {
 		}
 	}
 	return out
+}
+
+// JSONDecodeFields parses selected fields that contain JSON strings (object/array) into structured values.
+// This is useful when SQL returns JSON_OBJECT/JSON_ARRAYAGG, which often arrives as []byte/string.
+// If parsing fails or the field is not a string, it is left unchanged.
+func JSONDecodeFields(doc map[string]interface{}, fields []string) {
+	if doc == nil || len(fields) == 0 {
+		return
+	}
+	for _, field := range fields {
+		f := strings.TrimSpace(field)
+		if f == "" {
+			continue
+		}
+		v, ok := doc[f]
+		if !ok {
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s == "" || s == "null" {
+			continue
+		}
+		// Only attempt JSON for likely candidates.
+		if !(strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")) {
+			continue
+		}
+		var out interface{}
+		if err := json.Unmarshal([]byte(s), &out); err != nil {
+			continue
+		}
+		doc[f] = out
+	}
 }
 
 // SplitStringField splits a string field into []string by sep, with optional trimming and empty removal.

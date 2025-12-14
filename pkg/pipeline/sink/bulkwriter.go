@@ -178,11 +178,13 @@ func (b *BulkWriter) Delete(ctx context.Context, timeout time.Duration, index st
 //   - retryConfig: 重试配置
 //   - queryFn: 查询函数，接收context、SQL和ID列表，返回查询结果
 //   - transformRules: 数据转换规则
+//   - jsonDecodeFields: JSON解码字段列表
 //   - logContext: 日志上下文信息
 //
 // 返回值:
 //   - 重试成功的文档数量
 //   - 错误信息
+
 func (b *BulkWriter) HandleConflictIDs(
 	ctx context.Context,
 	conflictedIDs []string,
@@ -191,9 +193,10 @@ func (b *BulkWriter) HandleConflictIDs(
 	index string,
 	idField string,
 	mainSQL string,
-	retryConfig mapper.RetryConfig,
+	retryCfg mapper.RetryConfig,
 	queryFn func(context.Context, string, []int64) ([]map[string]interface{}, error),
 	transformRules []cfgpkg.SplitFieldRule,
+	jsonDecodeFields []string,
 	logContext string,
 ) (int, error) {
 	if len(conflictedIDs) == 0 {
@@ -216,7 +219,7 @@ func (b *BulkWriter) HandleConflictIDs(
 
 	// 重新查询冲突ID对应的数据
 	var rows2 []map[string]interface{}
-	rows2, _, _ = mapper.Do(ctx, qTimeout, retryConfig, b.log, func(qctx context.Context) ([]map[string]interface{}, error) {
+	rows2, _, _ = mapper.Do(ctx, qTimeout, retryCfg, b.log, func(qctx context.Context) ([]map[string]interface{}, error) {
 		return queryFn(qctx, mainSQL, ids2)
 	})
 
@@ -233,6 +236,9 @@ func (b *BulkWriter) HandleConflictIDs(
 	docs2 := make([]map[string]interface{}, 0, len(rows2))
 	for _, row := range rows2 {
 		doc := transform.NormalizeBytesToString(row)
+		if len(jsonDecodeFields) > 0 {
+			transform.JSONDecodeFields(doc, jsonDecodeFields)
+		}
 		if len(transformRules) > 0 {
 			for _, rule := range transformRules {
 				if rule.Field == "" {

@@ -40,7 +40,13 @@ func NewRunner(log *zap.Logger, cfg cfgpkg.Config) (*Runner, error) {
 	} else {
 		log.Info("设置group_concat_max_len", zap.Int("value", 1048576))
 	}
-	esw, err := es.New(cfg.ES.Addresses, cfg.ES.Username, cfg.ES.Password)
+	esw, err := es.NewWithTLS(cfg.ES.Addresses, cfg.ES.Username, cfg.ES.Password, es.TLSConfig{
+		InsecureSkipVerify: cfg.ES.TLS.InsecureSkipVerify,
+		CAFile:             cfg.ES.TLS.CAFile,
+		CertFile:           cfg.ES.TLS.CertFile,
+		KeyFile:            cfg.ES.TLS.KeyFile,
+		ServerName:         cfg.ES.TLS.ServerName,
+	})
 	if err != nil {
 		return nil, err
 	}

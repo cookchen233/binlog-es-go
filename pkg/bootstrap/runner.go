@@ -79,6 +79,9 @@ func (r *Runner) RunWithIDs(ctx context.Context, ids []int64) error {
 		docs := make([]map[string]interface{}, 0, len(rows))
 		for _, row := range rows {
 			doc := transform.NormalizeBytesToString(row)
+			if len(r.task.Transforms.JSONDecodeFields) > 0 {
+				transform.JSONDecodeFields(doc, r.task.Transforms.JSONDecodeFields)
+			}
 			// 应用 transforms.splitFields 规则
 			if len(r.task.Transforms.SplitFields) > 0 {
 				for _, rule := range r.task.Transforms.SplitFields {
@@ -106,6 +109,7 @@ func (r *Runner) RunWithIDs(ctx context.Context, ids []int64) error {
 					mapper.RetryConfig{MaxAttempts: r.task.Retry.MaxAttempts, BackoffMs: r.task.Retry.BackoffMs},
 					r.mysql.QueryMapping,
 					r.task.Transforms.SplitFields,
+					r.task.Transforms.JSONDecodeFields,
 					"RunWithIDs",
 				)
 				if err != nil {
@@ -173,7 +177,13 @@ func NewRunner(log *zap.Logger, cfg cfgpkg.Config, task cfgpkg.SyncTask) (*Runne
 	// 注入日志与SQL调试开关
 	mysql.SetLogger(log)
 	mysql.SetDebug(cfg.Debug.SQL, cfg.Debug.SQLParams)
-	esw, err := espkg.New(cfg.ES.Addresses, cfg.ES.Username, cfg.ES.Password)
+	esw, err := espkg.NewWithTLS(cfg.ES.Addresses, cfg.ES.Username, cfg.ES.Password, espkg.TLSConfig{
+		InsecureSkipVerify: cfg.ES.TLS.InsecureSkipVerify,
+		CAFile:             cfg.ES.TLS.CAFile,
+		CertFile:           cfg.ES.TLS.CertFile,
+		KeyFile:            cfg.ES.TLS.KeyFile,
+		ServerName:         cfg.ES.TLS.ServerName,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -336,6 +346,9 @@ func (r *Runner) Run(ctx context.Context, minAutoID, maxAutoID int64, partSize i
 				docs := make([]map[string]interface{}, 0, len(rows))
 				for _, row := range rows {
 					doc := transform.NormalizeBytesToString(row)
+					if len(r.task.Transforms.JSONDecodeFields) > 0 {
+						transform.JSONDecodeFields(doc, r.task.Transforms.JSONDecodeFields)
+					}
 					// 应用 transforms.splitFields 规则
 					if len(r.task.Transforms.SplitFields) > 0 {
 						for _, rule := range r.task.Transforms.SplitFields {
@@ -368,6 +381,7 @@ func (r *Runner) Run(ctx context.Context, minAutoID, maxAutoID int64, partSize i
 							mapper.RetryConfig{MaxAttempts: r.task.Retry.MaxAttempts, BackoffMs: r.task.Retry.BackoffMs},
 							r.mysql.QueryMapping,
 							r.task.Transforms.SplitFields,
+							r.task.Transforms.JSONDecodeFields,
 							"bootstrap",
 						)
 						if err != nil {
