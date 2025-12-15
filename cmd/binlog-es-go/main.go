@@ -306,22 +306,24 @@ func runBootstrap() int {
 		logger.Error("init bootstrap runner failed", zap.Error(err))
 		return 1
 	}
-	// If min/max not provided, auto-detect from main table (PoC)
-	if bsMinAutoID == 0 || bsMaxAutoID == 0 {
-		minV, maxV, errRange := runner.ResolveAutoIDRange(ctx)
-		if errRange != nil {
-			logger.Error("resolve auto id range failed", zap.Error(errRange))
-			return 1
+	if bsMinAutoID == 0 && bsMaxAutoID == 0 {
+		err = runner.RunFullScan(ctx, bsPartitionSz, bsWorkers, bsSQLWhere)
+	} else {
+		if bsMinAutoID == 0 || bsMaxAutoID == 0 {
+			minV, maxV, errRange := runner.ResolveAutoIDRange(ctx)
+			if errRange != nil {
+				logger.Error("resolve auto id range failed", zap.Error(errRange))
+				return 1
+			}
+			if bsMinAutoID == 0 {
+				bsMinAutoID = minV
+			}
+			if bsMaxAutoID == 0 {
+				bsMaxAutoID = maxV
+			}
 		}
-		if bsMinAutoID == 0 {
-			bsMinAutoID = minV
-		}
-		if bsMaxAutoID == 0 {
-			bsMaxAutoID = maxV
-		}
+		err = runner.Run(ctx, bsMinAutoID, bsMaxAutoID, bsPartitionSz, bsWorkers, bsSQLWhere)
 	}
-
-	err = runner.Run(ctx, bsMinAutoID, bsMaxAutoID, bsPartitionSz, bsWorkers, bsSQLWhere)
 	if err != nil {
 		logger.Error("bootstrap failed", zap.Error(err))
 		return 1

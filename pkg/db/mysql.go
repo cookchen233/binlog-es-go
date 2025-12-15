@@ -100,6 +100,26 @@ func (m *MySQL) GetIDs(ctx context.Context, table, keyCol string, start, end int
 	return ids, rows.Err()
 }
 
+func (m *MySQL) GetIDsAfter(ctx context.Context, table, keyCol string, after int64, limit int) ([]int64, error) {
+	query := fmt.Sprintf("SELECT %s FROM %s WHERE %s > ? ORDER BY %s ASC LIMIT ?", keyCol, table, keyCol, keyCol)
+	rows, err := m.DB.QueryxContext(ctx, query, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id sql.NullInt64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if id.Valid {
+			ids = append(ids, id.Int64)
+		}
+	}
+	return ids, rows.Err()
+}
+
 // QueryMapping executes the main mapping SQL with IN expansion and returns rows as list of maps.
 func (m *MySQL) QueryMapping(ctx context.Context, mainSQL string, keys []int64) ([]map[string]interface{}, error) {
 	if len(keys) == 0 {

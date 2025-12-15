@@ -60,6 +60,11 @@ MySQL 8.4 注意事项
 
 ### 全量/局部重算（Bootstrap）
 ```bash
+# 全量扫描（推荐）
+# - 默认不需要提供 min/max，适用于雪花ID/非自增主键（使用游标翻页扫描：ORDER BY 主键 LIMIT pageSize）
+# - 若配置了 mapping.sharding.shards，会自动枚举物理分表（如 enterprise_00..enterprise_63）并并发扫描
+./bin/binlog-es-go --config=configs/config.yaml --mode=bootstrap --task=<task_name>
+
 # 按 ID 区间重算
 # 例如：将 [100000, 200000) 范围内的文档重算后回写 ES
 ./bin/binlog-es-go --config=configs/config.yaml --mode=bootstrap --task=<task_name> \
@@ -78,6 +83,10 @@ MySQL 8.4 注意事项
 并发与批量参数由 `configs/config.yaml` 中 `bootstrap` 与 `syncTasks[].bulk` 决定：
 - `bootstrap.partitionSize`、`bootstrap.workers`、`bootstrap.bulkSize`、`bootstrap.bulkFlushMs`、`bootstrap.runBatchSize`
 - `syncTasks[].bulk.size`（如未显式指定，会用于 `RunWithIDs()` 的内层批尺寸优先级判断）
+
+说明：
+- 不传 `bootstrap.partition.auto_id.min/max` 时，`bootstrap.partitionSize` 表示全量扫描时的 `pageSize`（每页拉取多少个主键）。
+- 传了 `bootstrap.partition.auto_id.min/max` 时，`bootstrap.partitionSize` 仍按旧语义作为区间扫描的分区大小。
 
 ### deleteOnMissing：语义与使用建议
 
@@ -151,7 +160,7 @@ MySQL 8.4 注意事项
 --task string                      任务名称
 --bootstrap.partition.auto_id.min  bootstrap最小AutoID
 --bootstrap.partition.auto_id.max  bootstrap最大AutoID
---bootstrap.partition.size         bootstrap分区大小 (默认 5000)
+--bootstrap.partition.size         bootstrap参数: 全量扫描为 pageSize；区间扫描为分区大小 (默认 5000)
 --bootstrap.workers                bootstrap工作线程数 (默认 4)
 --bootstrap.sql-where              bootstrap额外WHERE条件
 --bulk.size                        覆盖批量大小 (默认 1000)
